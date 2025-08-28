@@ -134,6 +134,8 @@ class StrokeFeatures:
     aspect: float
     closure_ratio: float
     angle_hist: np.ndarray  # [horiz, diag, vert] aggregate
+    peak_count: int  # Number of local maxima/minima (useful for M vs K)
+    curvature_score: float  # Measure of how curved vs angular the stroke is
 
 def stroke_features(xs: np.ndarray, ys: np.ndarray) -> StrokeFeatures:
     xs = xs - xs.min(); ys = ys - ys.min()
@@ -152,7 +154,36 @@ def stroke_features(xs: np.ndarray, ys: np.ndarray) -> StrokeFeatures:
     vert = bins[2]
     total = max(int(horiz+diagc+vert), 1)
     hist = np.array([horiz, diagc, vert], float) / total
-    return StrokeFeatures(width=w, height=h, aspect=(h+1e-9)/(w+1e-9), closure_ratio=closure, angle_hist=hist)
+    
+    # Count peaks (local maxima) - useful for distinguishing M from K
+    peak_count = 0
+    if len(xs) > 4:
+        for i in range(2, len(xs)-2):
+            if (xs[i] > xs[i-1] and xs[i] > xs[i-2] and 
+                xs[i] > xs[i+1] and xs[i] > xs[i+2]):
+                peak_count += 1
+    
+    # Curvature score - measures how curved vs angular the stroke is
+    curvature_score = 0.0
+    if len(xs) > 2:
+        # Calculate angle changes between consecutive segments
+        angles = []
+        for i in range(len(xs)-2):
+            v1 = np.array([xs[i+1]-xs[i], ys[i+1]-ys[i]])
+            v2 = np.array([xs[i+2]-xs[i+1], ys[i+2]-ys[i+1]])
+            if np.linalg.norm(v1) > 1e-6 and np.linalg.norm(v2) > 1e-6:
+                cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+                cos_angle = np.clip(cos_angle, -1.0, 1.0)
+                angle = np.arccos(cos_angle)
+                angles.append(angle)
+        if angles:
+            curvature_score = float(np.mean(angles))
+    
+    return StrokeFeatures(
+        width=w, height=h, aspect=(h+1e-9)/(w+1e-9), 
+        closure_ratio=closure, angle_hist=hist,
+        peak_count=peak_count, curvature_score=curvature_score
+    )
 
 
 # -------------------- Lightweight self-training (writer adaptation) --------------------
@@ -264,34 +295,130 @@ def blend_prototypes(base: Dict[str,np.ndarray], adapted: Dict[str,np.ndarray], 
 
 def build_prototypes() -> dict:
     def res(points, n): return normalize_unit_box(resample_polyline(np.array(points,float), n))
+    
+    # Existing prototypes
     def proto_A():
         leg1=[[0.1,0.95],[0.5,0.05],[0.9,0.95]]
         bar=[[0.3,0.55],[0.7,0.55]]
         return np.vstack([res(leg1,200), res(bar,100)])
-    def proto_N():
-        left=[[0.1,0.95],[0.1,0.05]]; diag=[[0.1,0.05],[0.9,0.95]]; right=[[0.9,0.95],[0.9,0.05]]
-        return np.vstack([res(left,100),res(diag,100),res(right,100)])
-    def proto_K():
-        left=[[0.1,0.95],[0.1,0.05]]; up=[[0.1,0.5],[0.9,0.05]]; down=[[0.1,0.5],[0.9,0.95]]
-        return np.vstack([res(left,100),res(up,100),res(down,100)])
-    def proto_E():
-        v=[[0.1,0.05],[0.1,0.95]]; t=[[0.1,0.05],[0.9,0.05]]; m=[[0.1,0.5],[0.7,0.5]]; b=[[0.1,0.95],[0.9,0.95]]
-        return np.vstack([res(v,100),res(t,80),res(m,70),res(b,80)])
-    def proto_I():
-        v=[[0.5,0.05],[0.5,0.95]]
-        return res(v,300)
-    def proto_O():
-        th=np.linspace(0,2*np.pi,300); r=0.45; cx=0.5; cy=0.5
+    
+    def proto_B():
+        v=[[0.1,0.05],[0.1,0.95]]
+        t=[[0.1,0.05],[0.8,0.05]]; m=[[0.1,0.5],[0.7,0.5]]; b=[[0.1,0.95],[0.8,0.95]]
+        arc1=res([[0.8,0.05],[0.8,0.5],[0.1,0.5]],80)
+        arc2=res([[0.8,0.5],[0.8,0.95],[0.1,0.95]],80)
+        return np.vstack([res(v,120),res(t,80),res(m,70),res(b,80),arc1,arc2])
+    
+    def proto_C():
+        th=np.linspace(np.pi/6,11*np.pi/6,200); r=0.45; cx=0.5; cy=0.5
         return normalize_unit_box(np.c_[cx+r*np.cos(th), cy+r*np.sin(th)])
-    def proto_Q():
-        o=proto_O(); tail=res([[0.65,0.7],[0.95,0.95]],60)
-        return np.vstack([o,tail])
+    
     def proto_D():
         v=[[0.1,0.05],[0.1,0.95]]
         th=np.linspace(-np.pi/2,np.pi/2,180); r=0.45; cx=0.1; cy=0.5
         arc=np.c_[cx + r*np.cos(th), cy + r*np.sin(th)]
         return np.vstack([res(v,120), normalize_unit_box(arc)])
-    return {'A': proto_A(), 'N': proto_N(), 'K': proto_K(), 'E': proto_E(), 'I': proto_I(), 'O': proto_O(), 'Q': proto_Q(), 'D': proto_D()}
+    
+    def proto_E():
+        v=[[0.1,0.05],[0.1,0.95]]; t=[[0.1,0.05],[0.9,0.05]]; m=[[0.1,0.5],[0.7,0.5]]; b=[[0.1,0.95],[0.9,0.95]]
+        return np.vstack([res(v,100),res(t,80),res(m,70),res(b,80)])
+    
+    def proto_F():
+        v=[[0.1,0.05],[0.1,0.95]]; t=[[0.1,0.05],[0.9,0.05]]; m=[[0.1,0.5],[0.7,0.5]]
+        return np.vstack([res(v,120),res(t,80),res(m,70)])
+    
+    def proto_G():
+        th=np.linspace(np.pi/6,11*np.pi/6,200); r=0.45; cx=0.5; cy=0.5
+        c=normalize_unit_box(np.c_[cx+r*np.cos(th), cy+r*np.sin(th)])
+        bar=res([[0.5,0.5],[0.8,0.5]],60)
+        return np.vstack([c,bar])
+    
+    def proto_H():
+        left=[[0.1,0.05],[0.1,0.95]]; right=[[0.9,0.05],[0.9,0.95]]; bar=[[0.1,0.5],[0.9,0.5]]
+        return np.vstack([res(left,100),res(right,100),res(bar,80)])
+    
+    def proto_I():
+        v=[[0.5,0.05],[0.5,0.95]]
+        return res(v,300)
+    
+    def proto_J():
+        v=[[0.8,0.05],[0.8,0.7]]; curve=res([[0.8,0.7],[0.5,0.7],[0.3,0.8]],80)
+        return np.vstack([res(v,120),curve])
+    
+    def proto_K():
+        left=[[0.1,0.95],[0.1,0.05]]; up=[[0.1,0.5],[0.9,0.05]]; down=[[0.1,0.5],[0.9,0.95]]
+        return np.vstack([res(left,100),res(up,100),res(down,100)])
+    
+    def proto_L():
+        v=[[0.1,0.05],[0.1,0.95]]; h=[[0.1,0.95],[0.8,0.95]]
+        return np.vstack([res(v,120),res(h,80)])
+    
+    def proto_M():
+        left=[[0.1,0.95],[0.1,0.05]]; peak1=[[0.1,0.05],[0.3,0.5]]; peak2=[[0.3,0.5],[0.5,0.05]]; peak3=[[0.5,0.05],[0.7,0.5]]; peak4=[[0.7,0.5],[0.9,0.05]]; right=[[0.9,0.95],[0.9,0.05]]
+        return np.vstack([res(left,80),res(peak1,60),res(peak2,60),res(peak3,60),res(peak4,60),res(right,80)])
+    
+    def proto_N():
+        left=[[0.1,0.95],[0.1,0.05]]; diag=[[0.1,0.05],[0.9,0.95]]; right=[[0.9,0.95],[0.9,0.05]]
+        return np.vstack([res(left,100),res(diag,100),res(right,100)])
+    
+    def proto_O():
+        th=np.linspace(0,2*np.pi,300); r=0.45; cx=0.5; cy=0.5
+        return normalize_unit_box(np.c_[cx+r*np.cos(th), cy+r*np.sin(th)])
+    
+    def proto_P():
+        v=[[0.1,0.05],[0.1,0.95]]; t=[[0.1,0.05],[0.8,0.05]]; r=[[0.8,0.05],[0.8,0.5]]; b=[[0.8,0.5],[0.1,0.5]]
+        return np.vstack([res(v,120),res(t,80),res(r,60),res(b,80)])
+    
+    def proto_Q():
+        o=proto_O(); tail=res([[0.65,0.7],[0.95,0.95]],60)
+        return np.vstack([o,tail])
+    
+    def proto_R():
+        v=[[0.1,0.05],[0.1,0.95]]; t=[[0.1,0.05],[0.8,0.05]]; r=[[0.8,0.05],[0.8,0.5]]; b=[[0.8,0.5],[0.1,0.5]]; diag=[[0.8,0.5],[0.9,0.95]]
+        return np.vstack([res(v,120),res(t,80),res(r,60),res(b,80),res(diag,60)])
+    
+    def proto_S():
+        # S shape with curves
+        curve1=res([[0.8,0.1],[0.5,0.1],[0.2,0.3],[0.2,0.5]],100)
+        curve2=res([[0.2,0.5],[0.5,0.5],[0.8,0.7],[0.8,0.9]],100)
+        return np.vstack([curve1,curve2])
+    
+    def proto_T():
+        h=[[0.1,0.05],[0.9,0.05]]; v=[[0.5,0.05],[0.5,0.95]]
+        return np.vstack([res(h,100),res(v,120)])
+    
+    def proto_U():
+        left=[[0.1,0.05],[0.1,0.7]]; right=[[0.9,0.05],[0.9,0.7]]; curve=res([[0.1,0.7],[0.5,0.9],[0.9,0.7]],100)
+        return np.vstack([res(left,100),res(right,100),curve])
+    
+    def proto_V():
+        left=[[0.1,0.05],[0.5,0.95]]; right=[[0.5,0.95],[0.9,0.05]]
+        return np.vstack([res(left,100),res(right,100)])
+    
+    def proto_W():
+        left=[[0.1,0.05],[0.3,0.95]]; mid1=[[0.3,0.95],[0.5,0.05]]; mid2=[[0.5,0.05],[0.7,0.95]]; right=[[0.7,0.95],[0.9,0.05]]
+        return np.vstack([res(left,80),res(mid1,80),res(mid2,80),res(right,80)])
+    
+    def proto_X():
+        diag1=[[0.1,0.05],[0.9,0.95]]; diag2=[[0.1,0.95],[0.9,0.05]]
+        return np.vstack([res(diag1,100),res(diag2,100)])
+    
+    def proto_Y():
+        left=[[0.1,0.95],[0.5,0.5]]; right=[[0.9,0.95],[0.5,0.5]]; down=[[0.5,0.5],[0.5,0.05]]
+        return np.vstack([res(left,100),res(right,100),res(down,100)])
+    
+    def proto_Z():
+        h1=[[0.1,0.05],[0.9,0.05]]; diag=[[0.9,0.05],[0.1,0.95]]; h2=[[0.1,0.95],[0.9,0.95]]
+        return np.vstack([res(h1,80),res(diag,100),res(h2,80)])
+    
+    return {
+        'A': proto_A(), 'B': proto_B(), 'C': proto_C(), 'D': proto_D(), 'E': proto_E(),
+        'F': proto_F(), 'G': proto_G(), 'H': proto_H(), 'I': proto_I(), 'J': proto_J(),
+        'K': proto_K(), 'L': proto_L(), 'M': proto_M(), 'N': proto_N(), 'O': proto_O(),
+        'P': proto_P(), 'Q': proto_Q(), 'R': proto_R(), 'S': proto_S(), 'T': proto_T(),
+        'U': proto_U(), 'V': proto_V(), 'W': proto_W(), 'X': proto_X(), 'Y': proto_Y(),
+        'Z': proto_Z()
+    }
 
 
 # -------------------- Classification --------------------
@@ -306,13 +433,40 @@ def classify_stroke(xs: np.ndarray, ys: np.ndarray, PROTOS: dict) -> Tuple[str, 
 
     feats = stroke_features(xs, ys)
 
-    # Heuristic prefilter
+    # Enhanced heuristic prefiltering
     # 1) Clear vertical line ('I'): tall & skinny, vertical-dominated, not closed
     if feats.aspect > 2.2 and feats.angle_hist[2] > 0.55 and feats.closure_ratio > 0.08:
         return 'I', 0.0, feats
+    
     # 2) 'E': strong horizontal + some vertical, not closed
     if feats.angle_hist[0] > 0.48 and feats.angle_hist[2] > 0.18 and feats.closure_ratio > 0.05:
         # let chamfer confirm between E/K/A
+        pass
+    
+    # 3) 'M': multiple peaks, strong horizontal components, not closed
+    if feats.angle_hist[0] > 0.4 and feats.closure_ratio > 0.1 and feats.aspect < 1.5:
+        # Check if it has multiple horizontal segments (characteristic of M)
+        # This is a simplified check - could be enhanced with more sophisticated analysis
+        pass
+    
+    # 4) 'Y': V-shape at top, vertical line down, strong diagonal components
+    if feats.angle_hist[1] > 0.4 and feats.angle_hist[2] > 0.2 and feats.aspect > 1.2:
+        # Strong diagonal + vertical suggests Y
+        pass
+    
+    # 5) 'P': closed loop on right side, strong vertical, moderate horizontal
+    if feats.closure_ratio < 0.15 and feats.angle_hist[2] > 0.3 and feats.angle_hist[0] > 0.2:
+        # Not fully closed but has some closure, vertical + horizontal suggests P
+        pass
+    
+    # 6) 'M': very specific - should have 2+ peaks and strong horizontal
+    if feats.peak_count >= 2 and feats.angle_hist[0] > 0.35 and feats.aspect < 1.8:
+        # High confidence this is M
+        pass
+    
+    # 7) 'Y': very specific - should have strong diagonal + vertical, not too closed
+    if feats.angle_hist[1] > 0.45 and feats.angle_hist[2] > 0.25 and feats.closure_ratio > 0.2:
+        # High confidence this is Y
         pass
 
     best_ch = None; best_d = 1e9
@@ -327,10 +481,91 @@ def classify_stroke(xs: np.ndarray, ys: np.ndarray, PROTOS: dict) -> Tuple[str, 
                 if d < best_d:
                     best_d = d; best_ch = ch
 
-    # lightweight tie-breaking with features
+    # Enhanced tie-breaking with features
     if best_ch in ('O','Q') and feats.closure_ratio > 0.08:
         # not actually closed -> more likely D
         best_ch = 'D'
+    
+    # Additional tie-breaking for similar letters using new features
+    if best_ch == 'K' and feats.angle_hist[1] > 0.5:
+        # Strong diagonal suggests K, but could be N
+        # N has more diagonal content than K
+        if feats.angle_hist[1] > 0.6:
+            best_ch = 'N'  # Very strong diagonal suggests N
+    
+    if best_ch == 'N' and feats.angle_hist[1] < 0.4:
+        # Weak diagonal suggests K instead of N
+        if feats.angle_hist[2] > 0.3:  # Strong vertical
+            best_ch = 'K'
+    
+    if best_ch == 'M' and feats.peak_count < 2:
+        # M should have multiple peaks, if not, might be K
+        if feats.angle_hist[1] > 0.4:  # Strong diagonal
+            best_ch = 'K'
+    
+    if best_ch == 'K' and feats.peak_count > 2:
+        # K shouldn't have many peaks, if it does, might be M
+        if feats.angle_hist[0] > 0.3:  # Some horizontal content
+            best_ch = 'M'
+    
+    if best_ch == 'P' and feats.closure_ratio > 0.2:
+        # Too closed for P, more likely D or O
+        if feats.aspect > 1.5:
+            best_ch = 'D'  # Tall and closed suggests D
+        else:
+            best_ch = 'O'  # Round and closed suggests O
+    
+    if best_ch == 'D' and feats.curvature_score < 0.3:
+        # D should be curved, if too angular, might be N
+        if feats.angle_hist[1] > 0.4:  # Strong diagonal
+            best_ch = 'N'
+    
+    if best_ch == 'N' and feats.curvature_score > 0.8:
+        # N should be angular, if too curved, might be D
+        if feats.closure_ratio < 0.15:  # Not too closed
+            best_ch = 'D'
+    
+    # Final aggressive tie-breaking for the specific problematic pairs
+    # M vs K: M has peaks, K doesn't
+    if best_ch == 'K' and feats.peak_count >= 2 and feats.angle_hist[0] > 0.3:
+        best_ch = 'M'
+    
+    # N vs K: N has stronger diagonal, K has stronger vertical
+    if best_ch == 'K' and feats.angle_hist[1] > 0.55:
+        best_ch = 'N'
+    if best_ch == 'N' and feats.angle_hist[1] < 0.35 and feats.angle_hist[2] > 0.4:
+        best_ch = 'K'
+    
+    # P vs N: P has some closure, N is open
+    if best_ch == 'N' and feats.closure_ratio < 0.2 and feats.angle_hist[0] > 0.25:
+        best_ch = 'P'
+    
+    # D vs N: D is curved, N is angular
+    if best_ch == 'N' and feats.curvature_score > 0.7:
+        best_ch = 'D'
+    
+    # Additional refinements based on the specific errors observed
+    # K vs A: K has strong vertical + diagonal, A has triangular shape
+    if best_ch == 'A' and feats.angle_hist[2] > 0.4 and feats.angle_hist[1] > 0.3:
+        # Strong vertical + diagonal suggests K more than A
+        if feats.closure_ratio > 0.1:  # Not closed like A should be
+            best_ch = 'K'
+    
+    # O vs Q: O is fully closed, Q has a tail
+    if best_ch == 'Q' and feats.closure_ratio < 0.05:
+        # Very closed suggests O more than Q
+        best_ch = 'O'
+    
+    # D vs Y: D is curved and closed, Y is open with strong diagonal
+    if best_ch == 'Y' and feats.curvature_score > 0.6 and feats.closure_ratio < 0.15:
+        # Curved and not too open suggests D more than Y
+        best_ch = 'D'
+    
+    # N vs M: N has one diagonal, M has multiple peaks
+    if best_ch == 'M' and feats.peak_count < 2:
+        # Not enough peaks for M, might be N
+        if feats.angle_hist[1] > 0.4:  # Strong diagonal
+            best_ch = 'N'
 
     return best_ch, float(best_d), feats
 
@@ -372,7 +607,7 @@ def main():
     print('DECODED:', decoded)
     print()
     for i,(ch,score,feats) in enumerate(details,1):
-        print(f'{i:2d}. {ch:>2}  score={score:7.3f}  aspect={feats.aspect:5.2f}  closed?={feats.closure_ratio<0.08}  angles(h,d,v)={feats.angle_hist}')
+        print(f'{i:2d}. {ch:>2}  score={score:7.3f}  aspect={feats.aspect:5.2f}  closed?={feats.closure_ratio<0.08}  angles(h,d,v)={feats.angle_hist}  peaks={feats.peak_count}  curve={feats.curvature_score:.3f}')
 
     if args.check:
         # Delegate to the provided checker

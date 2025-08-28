@@ -1,0 +1,38 @@
+LETTER VISUALIZATION SUMMARY
+==================================================
+
+Total strokes analyzed: 15
+Average confidence: 0.129
+Confidence std dev: 0.023
+
+LETTER FREQUENCIES:
+------------------------------
+E: 1
+G: 3
+K: 2
+M: 2
+O: 1
+S: 2
+W: 1
+Y: 3
+
+DETAILED STROKE ANALYSIS:
+------------------------------
+Stroke  1: K (confidence: 0.152)
+Stroke  2: G (confidence: 0.107)
+Stroke  3: Y (confidence: 0.133)
+Stroke  4: M (confidence: 0.119)
+Stroke  5: S (confidence: 0.136)
+Stroke  6: Y (confidence: 0.126)
+Stroke  7: E (confidence: 0.186)
+Stroke  8: K (confidence: 0.133)
+Stroke  9: W (confidence: 0.071)
+Stroke 10: S (confidence: 0.132)
+Stroke 11: G (confidence: 0.143)
+Stroke 12: M (confidence: 0.129)
+Stroke 13: G (confidence: 0.113)
+Stroke 14: Y (confidence: 0.128)
+Stroke 15: O (confidence: 0.131)
+
+DECODED STRING: KGYMSYEKWSGMGYO
+Length: 15 characters
